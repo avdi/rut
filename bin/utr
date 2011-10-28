@@ -1,0 +1,112 @@
+#!/usr/bin/env ruby
+require 'benchmark'
+require 'time'
+require 'pathname'
+require 'etc'
+require 'csv'
+
+VERSION = "0.0.1"
+
+include Benchmark
+
+module UTR
+  # Encapsulates a test run.
+  class Run
+    include Benchmark
+
+    attr_reader :command_line
+
+    def initialize(command_line)
+      @command_line = command_line
+    end
+
+    def run
+      pid, exit_status = nil, nil
+      tms = measure do
+        pid, exit_status = execute_command
+      end
+      [pid, exit_status, tms]
+    end
+
+    def command
+      command_line.join(" ")
+    end
+
+    private
+
+    def execute_command
+      puts "-> #{command}"
+      pid = Process.spawn(*command_line)
+      Process.wait2(pid)
+    rescue SystemCallError => error
+      warn error.message
+      [0, 1]
+    end
+  end
+end
+
+include UTR
+
+def project_root?(dir)
+  dir = Pathname(dir)
+  ((dir + 'Rakefile').exist? || (dir + 'Gemfile').exist?)
+end
+
+def locate_project_root(working_directory)
+  working_directory.ascend { |p|
+    break p if project_root?(p)
+  } || working_directory
+end
+
+def all_files?(dir, args)
+  args.all?{|arg| (dir + arg).exist?}
+end
+
+def assemble_command(dir, args)
+  if args.empty?
+    %w[rake]
+  elsif all_files?(dir, args)
+    ['bundle', 'exec', 'rspec', *args]
+  else
+    args
+  end
+end
+
+working_directory = Pathname.pwd
+project_root      = locate_project_root(working_directory)
+origin            = `git config --get remote.origin.url`.chomp
+branch            = `git status -s -b`.match(/## (.*)$/)[1] || ''
+email             = `git config --get user.email`.chomp
+command_line      = assemble_command(working_directory, ARGV)
+command           = command_line.join(" ")
+home_directory    = Pathname(ENV.fetch('HOME'){Etc.getpwuid.dir})
+utr_directory     = home_directory + '.utr'
+log_file          = utr_directory + 'runs.csv'
+
+utr_directory.mkpath unless utr_directory.exist?
+
+start_time        = Time.now.utc.iso8601
+runner            = Run.new(command_line)
+exit_status, pid, tms = runner.run
+end_time          = Time.now.utc.iso8601
+
+CSV.open(log_file, 'ab') do |log|
+  log << [
+          VERSION,
+          start_time, 
+          end_time,
+          email,
+          origin,
+          branch,
+          project_root,
+          working_directory,
+          command,
+          pid,
+          exit_status.to_i,
+          tms.utime,
+          tms.stime,
+          tms.total,
+          tms.real,
+         ]
+end
+exit exit_status.to_i
