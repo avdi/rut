@@ -10,6 +10,69 @@ VERSION = "0.0.1"
 include Benchmark
 
 module UTR
+  def self.run
+    session = Session.new
+    session.configure
+    session.run
+  end
+
+  class Session
+    def configure
+      configuration_files.each do |path|
+        puts "Loading #{path}"
+        instance_eval(path.read, path.to_s, 1)
+      end
+    end
+
+    def run
+      customize_run(Run.new(self)).call
+    end
+
+    def home_directory
+      Pathname(ENV.fetch('HOME'){Etc.getpwuid.dir})
+    end
+
+    def working_directory
+      @working_directory ||= Pathname.pwd
+    end
+
+    def utr_directory
+      home_directory + '.utr'
+    end
+
+    def log_file
+      utr_directory + 'runs.csv'
+    end
+
+    def project
+      working_directory.basename
+    end
+
+    def run_extension_modules
+      @run_extension_modules ||= []
+    end
+
+    def extend_run(&module_body)
+      mod = Module.new
+      mod.module_eval(&module_body)
+      run_extension_modules << mod
+    end
+    
+    def configuration_files
+      @configuration_files ||= working_directory.to_enum(:ascend).inject([]){
+        |files, dir|
+        files << (dir + '.utrrc') if (dir + '.utrrc').file?
+        files
+      }.reverse
+    end
+
+    private
+
+    def customize_run(run)
+      run_extension_modules.inject(run, :extend)
+    end
+  end
+
   # Encapsulates a test run.
   class Run
     include Benchmark
@@ -19,6 +82,11 @@ module UTR
     attr_reader :pid
     attr_reader :exit_status
     attr_reader :tms
+    attr_reader :session
+
+    def initialize(session)
+      @session = session
+    end
 
     def call
       @tms = measure do
@@ -63,10 +131,6 @@ module UTR
 
     def args
       @args ||= ARGV.dup
-    end
-
-    def working_directory
-      @working_directory ||= Pathname.pwd
     end
 
     def command
@@ -128,6 +192,10 @@ module UTR
         break p if project_root?(p)
       } || working_directory
     end
+
+    def working_directory
+      session.working_directory
+    end
   end
 end
 
@@ -164,7 +232,7 @@ log_file          = utr_directory + 'runs.csv'
 
 utr_directory.mkpath unless utr_directory.exist?
 
-run            = Run.new
+UTR.run
 
 CSV.open(log_file, 'ab') do |log|
   log << [
