@@ -293,10 +293,6 @@ module RUT
   end
 end
 
-trap("CHLD") do
-  $stderr.puts "!!! Bye bye baby!"
-end
-
 RUT.run
 
 
