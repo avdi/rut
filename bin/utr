@@ -14,11 +14,8 @@ module UTR
   class Run
     include Benchmark
 
-    attr_reader :command_line
-
-    def initialize(command_line)
-      @command_line = command_line
-    end
+    attr_reader :start_time
+    attr_reader :end_time
 
     def run
       pid, exit_status = nil, nil
@@ -26,6 +23,48 @@ module UTR
         pid, exit_status = execute_command
       end
       [pid, exit_status, tms]
+    end
+
+    def command_line
+      @command_line ||= assemble_command(working_directory, args)
+    end
+
+    def assemble_command(dir, args)
+      if has_no_args?
+        command_for_full_run
+      elsif all_args_are_files?
+        command_for_running_files(args)
+      else
+        generic_command(args)
+      end
+    end
+
+    def has_no_args?
+      args.empty?
+    end
+
+    def all_args_are_files?
+      args.all?{|arg| (working_directory + arg).exist?}
+    end
+
+    def command_for_full_run
+      %w[rake]
+    end
+
+    def command_for_running_files(files)
+      ['bundle', 'exec', 'rspec', *files]
+    end
+
+    def generic_command(argv)
+      argv
+    end
+
+    def args
+      @args ||= ARGV.dup
+    end
+
+    def working_directory
+      @working_directory ||= Pathname.pwd
     end
 
     def command
@@ -36,11 +75,25 @@ module UTR
 
     def execute_command
       puts "-> #{command}"
+      record_start_time
       pid = Process.spawn(*command_line)
+      record_end_time
       Process.wait2(pid)
     rescue SystemCallError => error
       warn error.message
       [0, 1]
+    end
+
+    def record_start_time
+      @start_time = now.utc.iso8601
+    end
+
+    def record_end_time
+      @end_time = now.utc.iso8601
+    end
+
+    def now
+      Time.now
     end
   end
 end
@@ -86,15 +139,15 @@ log_file          = utr_directory + 'runs.csv'
 utr_directory.mkpath unless utr_directory.exist?
 
 start_time        = Time.now.utc.iso8601
-runner            = Run.new(command_line)
+runner            = Run.new
 exit_status, pid, tms = runner.run
 end_time          = Time.now.utc.iso8601
 
 CSV.open(log_file, 'ab') do |log|
   log << [
           VERSION,
-          start_time, 
-          end_time,
+          runner.start_time, 
+          runner.end_time,
           email,
           origin,
           branch,
