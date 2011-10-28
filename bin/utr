@@ -16,13 +16,15 @@ module UTR
 
     attr_reader :start_time
     attr_reader :end_time
+    attr_reader :pid
+    attr_reader :exit_status
+    attr_reader :tms
 
-    def run
-      pid, exit_status = nil, nil
-      tms = measure do
-        pid, exit_status = execute_command
+    def call
+      @tms = measure do
+        @pid, @exit_status = execute_command
       end
-      [pid, exit_status, tms]
+      [@pid, @exit_status, @tms]
     end
 
     def command_line
@@ -71,14 +73,34 @@ module UTR
       command_line.join(" ")
     end
 
+    def origin
+      @origin ||= exec_git_command("config --get remote.origin.url").chomp
+    end
+
+    def branch
+      @branch ||= exec_git_command("status -s -b").match(/## (.*)$/)[1] || ''
+    end
+
+    def email
+      @email ||= exec_git_command("config --get user.email").chomp
+    end
+
+    def project_root
+      @project_root ||= locate_project_root(working_directory)
+    end
+
+    def exec_git_command(command)
+      `git #{command}`
+    end
+
     private
 
     def execute_command
       puts "-> #{command}"
       record_start_time
       pid = Process.spawn(*command_line)
-      record_end_time
       Process.wait2(pid)
+      record_end_time
     rescue SystemCallError => error
       warn error.message
       [0, 1]
@@ -94,6 +116,17 @@ module UTR
 
     def now
       Time.now
+    end
+
+    def project_root?(dir)
+      dir = Pathname(dir)
+      ((dir + 'Rakefile').exist? || (dir + 'Gemfile').exist?)
+    end
+
+    def locate_project_root(working_directory)
+      working_directory.ascend { |p|
+        break p if project_root?(p)
+      } || working_directory
     end
   end
 end
@@ -125,41 +158,31 @@ def assemble_command(dir, args)
   end
 end
 
-working_directory = Pathname.pwd
-project_root      = locate_project_root(working_directory)
-origin            = `git config --get remote.origin.url`.chomp
-branch            = `git status -s -b`.match(/## (.*)$/)[1] || ''
-email             = `git config --get user.email`.chomp
-command_line      = assemble_command(working_directory, ARGV)
-command           = command_line.join(" ")
 home_directory    = Pathname(ENV.fetch('HOME'){Etc.getpwuid.dir})
 utr_directory     = home_directory + '.utr'
 log_file          = utr_directory + 'runs.csv'
 
 utr_directory.mkpath unless utr_directory.exist?
 
-start_time        = Time.now.utc.iso8601
-runner            = Run.new
-exit_status, pid, tms = runner.run
-end_time          = Time.now.utc.iso8601
+run            = Run.new
 
 CSV.open(log_file, 'ab') do |log|
   log << [
           VERSION,
-          runner.start_time, 
-          runner.end_time,
-          email,
-          origin,
-          branch,
-          project_root,
-          working_directory,
-          command,
-          pid,
-          exit_status.to_i,
-          tms.utime,
-          tms.stime,
-          tms.total,
-          tms.real,
+          run.start_time, 
+          run.end_time,
+          run.email,
+          run.origin,
+          run.branch,
+          run.project_root,
+          run.working_directory,
+          run.command,
+          run.pid,
+          run.exit_status.to_i,
+          run.tms.utime,
+          run.tms.stime,
+          run.tms.total,
+          run.tms.real,
          ]
 end
-exit exit_status.to_i
+exit run.exit_status.to_i
