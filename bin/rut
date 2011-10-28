@@ -8,13 +8,30 @@ require 'csv'
 include Benchmark
 
 module RUT
-  VERSION = "0.0.1"
+  VERSION = "0.0.2"
 
   def self.run
     session = Session.new
     session.configure
     session.run
     session.finish
+  end
+
+  class RunExtensionModule < Module
+    attr_reader :source_file
+
+    def initialize
+      super
+      @source_file = Pathname(caller.first.split(":").first)
+    end    
+
+    def applicable_to?(run)
+      true
+    end
+
+    def apply_if(&block)
+      define_singleton_method(:applicable_to?, &block)
+    end
   end
 
   class Session
@@ -59,7 +76,7 @@ module RUT
     end
 
     def extend_run(&module_body)
-      mod = Module.new
+      mod = RunExtensionModule.new
       mod.module_eval(&module_body)
       run_extension_modules << mod
     end
@@ -92,6 +109,7 @@ module RUT
                 run.tms.stime,
                 run.tms.total,
                 run.tms.real,
+                run.test_count
                ]
       end
     end
@@ -103,7 +121,9 @@ module RUT
     private
 
     def customize_run(run)
-      run_extension_modules.inject(run, :extend)
+      run_extension_modules.inject(run) {|run, mod| 
+        mod.applicable_to?(run) ? run.extend(mod) : run
+      }
     end
 
   end
@@ -118,9 +138,13 @@ module RUT
     attr_reader :exit_status
     attr_reader :tms
     attr_reader :session
+    attr_reader :test_count
 
     def initialize(session)
-      @session = session
+      @session    = session
+
+      # nil signifies tests were not counted
+      @test_count = nil
     end
 
     def call
@@ -197,7 +221,7 @@ module RUT
     end
 
     def command_environment
-      {}
+      {"RUT_PID" => $$}
     end
 
     def command_options
@@ -209,15 +233,21 @@ module RUT
     end
 
     def normalized_command_line
-      command_line.map(&:to_s)
+      Array(command_line).map(&:to_s)
     end
 
     def format_command_environment
-      command_environment.map{|k,v|"#{k}=#{v}"}.join(" ")
+      
+      command_environment.map{|k,v|"#{k}=#{v}"}.reject{|k,v| /^RUT_/ =~ k}.join(" ")
     end
 
     def format_full_command
       "#{format_command_environment} #{command} (PWD: #{working_directory})".strip
+    end
+
+    def increment_test_count
+      @test_count ||= 0        
+      @test_count += 1
     end
 
     private
@@ -230,10 +260,10 @@ module RUT
                           command_options)
       pid, exit_status = Process.wait2(pid)
       record_end_time
-      [pid, exit_status]
+      return [pid, exit_status]
     rescue SystemCallError, Interrupt => error
       warn error.message
-      [0, 1]
+      return [0, 1]
     end
 
     def record_start_time
@@ -261,6 +291,10 @@ module RUT
     end
 
   end
+end
+
+trap("CHLD") do
+  $stderr.puts "!!! Bye bye baby!"
 end
 
 RUT.run
