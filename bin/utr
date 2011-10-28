@@ -5,18 +5,21 @@ require 'pathname'
 require 'etc'
 require 'csv'
 
-VERSION = "0.0.1"
-
 include Benchmark
 
 module UTR
+  VERSION = "0.0.1"
+
   def self.run
     session = Session.new
     session.configure
     session.run
+    session.finish
   end
 
   class Session
+    attr_reader :last_run
+
     def configure
       configuration_files.each do |path|
         puts "Loading #{path}"
@@ -25,7 +28,10 @@ module UTR
     end
 
     def run
-      customize_run(Run.new(self)).call
+      the_run = Run.new(self)
+      customize_run(the_run).call
+      @last_run = the_run
+      record(the_run)
     end
 
     def home_directory
@@ -66,11 +72,40 @@ module UTR
       }.reverse
     end
 
+    def record(run)
+      utr_directory.mkpath unless utr_directory.exist?
+      CSV.open(log_file, 'ab') do |log|
+        log << [
+                ::UTR::VERSION,
+                run.start_time, 
+                run.end_time,
+                run.email,
+                run.origin,
+                run.branch,
+                run.project_root,
+                run.working_directory,
+                run.format_command_environment,
+                run.command,
+                run.pid,
+                run.exit_status.to_i,
+                run.tms.utime,
+                run.tms.stime,
+                run.tms.total,
+                run.tms.real,
+               ]
+      end
+    end
+
+    def finish
+      exit last_run.exit_status.to_i
+    end
+
     private
 
     def customize_run(run)
       run_extension_modules.inject(run, :extend)
     end
+
   end
 
   # Encapsulates a test run.
@@ -157,15 +192,46 @@ module UTR
       `git #{command}`
     end
 
+    def working_directory
+      session.working_directory
+    end
+
+    def command_environment
+      {}
+    end
+
+    def command_options
+      {}
+    end
+
+    def normalized_command_environment
+      command_environment.inject({}){|h, (k,v)| h.merge!(k.to_s => v.to_s)}
+    end
+
+    def normalized_command_line
+      command_line.map(&:to_s)
+    end
+
+    def format_command_environment
+      command_environment.map{|k,v|"#{k}=#{v}"}.join(" ")
+    end
+
+    def format_full_command
+      "#{format_command_environment} #{command} (PWD: #{working_directory})".strip
+    end
+
     private
 
     def execute_command
-      puts "-> #{command}"
+      puts "-> #{format_full_command}"
       record_start_time
-      pid = Process.spawn(*command_line)
-      Process.wait2(pid)
+      pid = Process.spawn(normalized_command_environment, 
+                          *normalized_command_line, 
+                          command_options)
+      pid, exit_status = Process.wait2(pid)
       record_end_time
-    rescue SystemCallError => error
+      [pid, exit_status]
+    rescue SystemCallError, Interrupt => error
       warn error.message
       [0, 1]
     end
@@ -193,64 +259,9 @@ module UTR
       } || working_directory
     end
 
-    def working_directory
-      session.working_directory
-    end
   end
 end
-
-include UTR
-
-def project_root?(dir)
-  dir = Pathname(dir)
-  ((dir + 'Rakefile').exist? || (dir + 'Gemfile').exist?)
-end
-
-def locate_project_root(working_directory)
-  working_directory.ascend { |p|
-    break p if project_root?(p)
-  } || working_directory
-end
-
-def all_files?(dir, args)
-  args.all?{|arg| (dir + arg).exist?}
-end
-
-def assemble_command(dir, args)
-  if args.empty?
-    %w[rake]
-  elsif all_files?(dir, args)
-    ['bundle', 'exec', 'rspec', *args]
-  else
-    args
-  end
-end
-
-home_directory    = Pathname(ENV.fetch('HOME'){Etc.getpwuid.dir})
-utr_directory     = home_directory + '.utr'
-log_file          = utr_directory + 'runs.csv'
-
-utr_directory.mkpath unless utr_directory.exist?
 
 UTR.run
 
-CSV.open(log_file, 'ab') do |log|
-  log << [
-          VERSION,
-          run.start_time, 
-          run.end_time,
-          run.email,
-          run.origin,
-          run.branch,
-          run.project_root,
-          run.working_directory,
-          run.command,
-          run.pid,
-          run.exit_status.to_i,
-          run.tms.utime,
-          run.tms.stime,
-          run.tms.total,
-          run.tms.real,
-         ]
-end
-exit run.exit_status.to_i
+
