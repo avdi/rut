@@ -7,7 +7,7 @@ require 'csv'
 
 include Benchmark
 
-module UTR
+module RUT
   VERSION = "0.0.1"
 
   def self.run
@@ -42,12 +42,12 @@ module UTR
       @working_directory ||= Pathname.pwd
     end
 
-    def utr_directory
-      home_directory + '.utr'
+    def rut_directory
+      home_directory + '.rut'
     end
 
     def log_file
-      utr_directory + 'runs.csv'
+      rut_directory + 'runs.csv'
     end
 
     def project
@@ -67,16 +67,16 @@ module UTR
     def configuration_files
       @configuration_files ||= working_directory.to_enum(:ascend).inject([]){
         |files, dir|
-        files << (dir + '.utrrc') if (dir + '.utrrc').file?
+        files << (dir + '.rutrc') if (dir + '.rutrc').file?
         files
       }.reverse
     end
 
     def record(run)
-      utr_directory.mkpath unless utr_directory.exist?
+      rut_directory.mkpath unless rut_directory.exist?
       CSV.open(log_file, 'ab') do |log|
         log << [
-                ::UTR::VERSION,
+                ::RUT::VERSION,
                 run.start_time, 
                 run.end_time,
                 run.email,
@@ -255,13 +255,14 @@ module UTR
 
     def locate_project_root(working_directory)
       working_directory.ascend { |p|
-        break p if project_root?(p)
-      } || working_directory
+        return p if project_root?(p)
+      }
+      return working_directory
     end
 
   end
 end
 
-UTR.run
+RUT.run
 
 

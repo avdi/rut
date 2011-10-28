@@ -4,7 +4,7 @@ require 'pathname'
 
 desc 'Install Universal Test Runner'
 task 'install' do
-  source = Pathname(__FILE__) + '../bin/utr'
+  source = Pathname(__FILE__) + '../bin/rut'
   dest   = Pathname("/usr/local/bin/#{source.basename}")
                     
   # Hard-code the shebang
