@@ -4,6 +4,8 @@ require 'time'
 require 'pathname'
 require 'etc'
 require 'csv'
+require 'shellwords'
+require 'optparse'
 
 include Benchmark
 
@@ -139,12 +141,15 @@ module RUT
     attr_reader :tms
     attr_reader :session
     attr_reader :test_count
+    attr_accessor :execution_strategy
 
     def initialize(session)
       @session    = session
 
       # nil signifies tests were not counted
       @test_count = nil
+      @execution_strategy = method(:execute_spawned_process)
+      process_flags
     end
 
     def call
@@ -161,8 +166,8 @@ module RUT
     def assemble_command(dir, args)
       if has_no_args?
         command_for_full_run
-      elsif all_args_are_files?
-        command_for_running_files(args)
+      elsif first_arg_is_file_or_flag?
+        command_for_running_files(expanded_args)
       else
         generic_command(args)
       end
@@ -173,15 +178,36 @@ module RUT
     end
 
     def all_args_are_files?
-      args.all?{|arg| (working_directory + arg).exist?}
+      expanded_args.all?(&:exist?)
+    end
+
+    def first_arg_is_file_or_flag?
+      case maybe_expand(args.first)
+      when Pathname, /\A-/ then true
+      else false
+      end
+    end
+
+    def expanded_args
+      args.map{|a| a.strip.shellsplit}.flatten.map{|a| 
+        maybe_expand(a)
+      }
+    end
+
+    def flag_args
+      expanded_args.reject{|a| a.is_a?(Pathname)}
     end
 
     def command_for_full_run
-      %w[rake]
+      command = %w[bundle exec rake]
+      unless pass_through_args.empty?
+        command << "SPEC_OPTS=#{pass_through_args.shelljoin}"
+      end
+      command
     end
 
     def command_for_running_files(files)
-      ['bundle', 'exec', 'rspec', *files]
+      ['bundle', 'exec', 'rspec', *pass_through_args, *files]
     end
 
     def generic_command(argv)
@@ -189,11 +215,15 @@ module RUT
     end
 
     def args
-      @args ||= ARGV.dup
+      @args ||= ARGV.take_while{|a| a != "--"}
+    end
+
+    def pass_through_args
+      @pass_through_args ||= ARGV.drop_while{|a| a != "--"}.drop(1)
     end
 
     def command
-      command_line.join(" ")
+      normalized_command_line.join(" ")
     end
 
     def origin
@@ -225,9 +255,13 @@ module RUT
     end
 
     def command_options
-      {}
+      {:chdir => command_run_directory.to_s}
     end
 
+    def command_run_directory
+      project_root
+    end
+    
     def normalized_command_environment
       command_environment.inject({}){|h, (k,v)| h.merge!(k.to_s => v.to_s)}
     end
@@ -242,7 +276,7 @@ module RUT
     end
 
     def format_full_command
-      "#{format_command_environment} #{command} (PWD: #{working_directory})".strip
+      "#{format_command_environment} #{command} (PWD: #{command_run_directory})".strip
     end
 
     def increment_test_count
@@ -255,15 +289,19 @@ module RUT
     def execute_command
       puts "-> #{format_full_command}"
       record_start_time
-      pid = Process.spawn(normalized_command_environment, 
-                          *normalized_command_line, 
-                          command_options)
-      pid, exit_status = Process.wait2(pid)
+      pid, exit_status = execution_strategy.call 
       record_end_time
       return [pid, exit_status]
     rescue SystemCallError, Interrupt => error
       warn error.message
       return [0, 1]
+    end
+
+    def execute_spawned_process
+      pid = Process.spawn(normalized_command_environment, 
+                          *normalized_command_line, 
+                          command_options)
+      Process.wait2(pid)
     end
 
     def record_start_time
@@ -290,6 +328,20 @@ module RUT
       return working_directory
     end
 
+    def expand_as_project_relative_path(s)
+      (working_directory + s).expand_path
+    end
+
+    def maybe_expand(s)
+      path = expand_as_project_relative_path(s)
+      path.exist? ? path : s
+    end
+
+    def process_flags
+      if args.delete("--dry-run")
+        self.execution_strategy = ->(){[0, 0]}
+      end
+    end
   end
 end
 
